@@ -31,7 +31,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
 }
 expoAutolinking.useExpoModules()
 
-rootProject.name = 'AICalendar'
+rootProject.name = 'AI_Calendar'
 
 expoAutolinking.useExpoVersionCatalog()
 

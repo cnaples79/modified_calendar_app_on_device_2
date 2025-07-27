@@ -1,4 +1,4 @@
-package com.aicalendar
+package com.AIcal
 
 import android.app.Application
 import android.content.res.Configuration
