@@ -14,14 +14,13 @@ type Subscriber = () => void;
  * asynchronously write to the database.
  */
 class CalendarService {
-  private db: SQLite.SQLiteDatabase;
+  private db!: SQLite.SQLiteDatabase;
   private events: Event[] = [];
   private subscribers: Subscriber[] = [];
 
   constructor() {
-    // Open (or create) a single database. Using the same file as the chat
-    // store allows both tables to live together.
-    this.db = SQLite.openDatabase('calendar.db');
+    // The database is opened asynchronously in the init() method.
+    // This constructor is intentionally left empty.
   }
 
   /**
@@ -29,17 +28,12 @@ class CalendarService {
    * existing events into memory. Returns a promise that resolves once
    * the events have been loaded.
    */
-  init(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.transaction(tx => {
-        tx.executeSql(
-          'CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, startTime INTEGER NOT NULL, endTime INTEGER NOT NULL, description TEXT)'
-        );
-      }, err => reject(err), () => {
-        // After ensuring the table exists, load any persisted events
-        this.loadEvents().then(resolve).catch(reject);
-      });
-    });
+  async init(): Promise<void> {
+    this.db = await SQLite.openDatabaseAsync('calendar.db');
+    await this.db.execAsync(
+      'CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, startTime INTEGER NOT NULL, endTime INTEGER NOT NULL, description TEXT)'
+    );
+    await this.loadEvents();
   }
 
   /**
@@ -47,32 +41,17 @@ class CalendarService {
    * be called during initialisation. Also notifies subscribers that
    * data has been loaded.
    */
-  private loadEvents(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.transaction(tx => {
-        tx.executeSql(
-          'SELECT * FROM events',
-          [],
-          (_, result) => {
-            const rows = result.rows;
-            const loaded: Event[] = [];
-            for (let i = 0; i < rows.length; i++) {
-              const row = rows.item(i);
-              loaded.push({
-                id: row.id,
-                title: row.title,
-                startTime: new Date(row.startTime),
-                endTime: new Date(row.endTime),
-                description: row.description ?? undefined,
-              });
-            }
-            this.events = loaded;
-            this.notify();
-            resolve();
-          }
-        );
-      }, err => reject(err));
-    });
+  private async loadEvents(): Promise<void> {
+    const result = await this.db.getAllAsync<any>('SELECT * FROM events');
+    const loaded: Event[] = result.map(row => ({
+      id: row.id,
+      title: row.title,
+      startTime: new Date(row.startTime),
+      endTime: new Date(row.endTime),
+      description: row.description ?? undefined,
+    }));
+    this.events = loaded;
+    this.notify();
   }
 
   subscribe(callback: Subscriber) {
@@ -126,12 +105,10 @@ class CalendarService {
     // Persist asynchronously
     const startMillis = new Date(startTime).getTime();
     const endMillis = new Date(endTime).getTime();
-    this.db.transaction(tx => {
-      tx.executeSql(
-        'INSERT INTO events (id, title, startTime, endTime, description) VALUES (?, ?, ?, ?, ?)',
-        [id, title, startMillis, endMillis, description ?? null]
-      );
-    });
+    this.db.runAsync(
+      'INSERT INTO events (id, title, startTime, endTime, description) VALUES (?, ?, ?, ?, ?)',
+      [id, title, startMillis, endMillis, description ?? null]
+    );
     return newEvent;
   }
 
@@ -156,12 +133,10 @@ class CalendarService {
       const { title, startTime, endTime, description } = eventToUpdate;
       const startMillis = startTime instanceof Date ? startTime.getTime() : new Date(startTime!).getTime();
       const endMillis = endTime instanceof Date ? endTime.getTime() : new Date(endTime!).getTime();
-      this.db.transaction(tx => {
-        tx.executeSql(
-          'UPDATE events SET title = ?, startTime = ?, endTime = ?, description = ? WHERE id = ?',
-          [title, startMillis, endMillis, description ?? null, id]
-        );
-      });
+      this.db.runAsync(
+        'UPDATE events SET title = ?, startTime = ?, endTime = ?, description = ? WHERE id = ?',
+        [title, startMillis, endMillis, description ?? null, id]
+      );
       return eventToUpdate;
     }
     return undefined;
@@ -176,9 +151,7 @@ class CalendarService {
       this.events = this.events.filter(event => event.id !== eventToDelete.id);
       this.notify();
       // Persist asynchronously
-      this.db.transaction(tx => {
-        tx.executeSql('DELETE FROM events WHERE id = ?', [eventToDelete.id]);
-      });
+      this.db.runAsync('DELETE FROM events WHERE id = ?', [eventToDelete.id]);
       return true;
     }
     return false;
@@ -193,7 +166,7 @@ class CalendarService {
    * Updates the event with the given ID. Returns the updated event if
    * successful.
    */
-  updateEvent(id: string, title: string, description?: string): Event | undefined {
+  async updateEvent(id: string, title: string, description?: string): Promise<Event | undefined> {
     const eventIndex = this.events.findIndex(event => event.id === id);
     if (eventIndex > -1) {
       const existing = this.events[eventIndex];
@@ -201,32 +174,28 @@ class CalendarService {
       this.events[eventIndex] = updatedEvent;
       this.notify();
       // Persist asynchronously
-      const startMillis = existing.startTime.getTime();
-      const endMillis = existing.endTime.getTime();
-      this.db.transaction(tx => {
-        tx.executeSql(
-          'UPDATE events SET title = ?, description = ?, startTime = ?, endTime = ? WHERE id = ?',
-          [title, description ?? null, startMillis, endMillis, id]
-        );
-      });
+      await this.db.runAsync(
+        'UPDATE events SET title = ?, description = ? WHERE id = ?',
+        [title, description ?? null, id]
+      );
       return updatedEvent;
     }
     return undefined;
   }
 
   /**
-   * Deletes the event with the given ID. Returns true if an event was
-   * removed.
+   * Deletes the event with the given ID. Returns true if successful.
    */
-  deleteEvent(id: string): boolean {
-    const initialLength = this.events.length;
-    this.events = this.events.filter(event => event.id !== id);
-    this.notify();
-    // Persist asynchronously
-    this.db.transaction(tx => {
-      tx.executeSql('DELETE FROM events WHERE id = ?', [id]);
-    });
-    return this.events.length < initialLength;
+  async deleteEvent(id: string): Promise<boolean> {
+    const eventIndex = this.events.findIndex(event => event.id === id);
+    if (eventIndex > -1) {
+      this.events.splice(eventIndex, 1);
+      this.notify();
+      // Persist asynchronously
+      await this.db.runAsync('DELETE FROM events WHERE id = ?', [id]);
+      return true;
+    }
+    return false;
   }
 }
 

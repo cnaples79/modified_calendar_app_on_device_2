@@ -25,7 +25,7 @@ export default function EventModal() {
     }
   }, [eventId]);
 
-    const handleSave = () => {
+    const handleSave = async () => {
     if (!title.trim()) {
       alert('Title is required.');
       return;
@@ -33,10 +33,10 @@ export default function EventModal() {
 
     if (eventId) {
       // Note: Manual update doesn't support changing time yet.
-            calendarService.updateEvent(eventId as string, title, description);
+      await calendarService.updateEvent(eventId as string, title, description);
     } else {
       const now = new Date();
-            calendarService.createEvent(title, now.toISOString(), now.toISOString(), description);
+      calendarService.createEvent(title, now.toISOString(), now.toISOString(), description);
     }
     router.back();
   };
